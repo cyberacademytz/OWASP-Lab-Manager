@@ -1,4 +1,4 @@
-# OWASP-Lab-Manager
+# OWASP Lab Manager
 
 <img width="1494" height="935" alt="owasp-install" src="https://github.com/user-attachments/assets/9af23adb-14f4-45ca-9d31-781229dbd271" />
 
@@ -7,10 +7,6 @@
 A simple menu-driven Python tool that spins up, monitors and tears down the well-known OWASP
 vulnerable training apps using Docker. It doesn't ship any vulnerable code of its own — it just
 automates pulling and running the official apps so you can get straight to practising.
-
-> **Heads up:** everything this tool deploys is *intentionally* broken and insecure. Keep it on
-> localhost or an isolated lab machine, never put it on a shared or public network, and only test
-> things you own or have permission to test.
 
 ## What's inside
 
@@ -22,10 +18,6 @@ automates pulling and running the official apps so you can get straight to pract
 | `requirements.txt` | Dependency notes (spoiler: there aren't any pip packages) |
 | `requirements-dev.txt`, `tests/test_basic.py` | Optional tests if you want to poke under the hood |
 
-For crAPI, Security Shepherd and Mutillidae II, the tool just downloads or clones the **official
-compose file straight from the project**, so you always get whatever the maintainers themselves
-ship — nothing reinvented here.
-
 ## Apps you can spin up
 
 | App | Tier | How it's deployed | Default ports | Open it at |
@@ -36,20 +28,6 @@ ship — nothing reinvented here.
 | OWASP crAPI | Official | official compose, downloaded fresh | 8888, 8025, 8443, 30080, 30443 | http://127.0.0.1:8888/ (mail: :8025) |
 | OWASP Security Shepherd | Official | official repo, cloned | 8080 / 8443, DB 13306, Mongo 27018 | http://127.0.0.1:8080/ |
 | OWASP Mutillidae II | Official project* | official repo, cloned | 80, 81, 82, 389, 443, 8888 | http://127.0.0.1/ |
-
-\* Mutillidae II is an OWASP project, but its Docker setup lives in the maintainer's own GitHub
-account rather than the OWASP org — worth knowing if you're being strict about provenance. crAPI
-also pulls a few third-party images (Postgres, Mongo, Chroma, MailHog) as part of its own stack.
-Anything you add yourself through the local catalog shows up tagged **COMMUNITY** so it's never
-confused with the official apps.
-
-A couple of apps share default ports — WebGoat and Shepherd both want 8080, crAPI and Mutillidae
-both want 8888 — so run those one at a time, or just remap the movable ones from the menu. The
-tool checks for clashes before it starts anything, so you'll know before it fails halfway through.
-
-Not every OWASP lab app made the list — NodeGoat and DVSA, for example, aren't in here because I
-haven't personally verified their current setup steps. You're welcome to add them yourself (see
-below).
 
 ## What you'll need
 
@@ -92,27 +70,6 @@ that.
 | 6. Update Images | Pull newer images (asks before recreating anything) |
 | 7. Remove & Cleanup | Remove one app, or wipe all lab containers and networks |
 | 8. Help & Documentation | Usage notes, safety reminders, project links |
-
-## How it behaves, in plain terms
-
-- Every app gets its own little Compose project (`owasplab-<id>`) with its own network, so
-  cleanup only ever touches what this tool created — nothing else on your machine is at risk.
-- Before starting anything, it checks for Docker, port conflicts, name clashes with existing
-  containers, whether the image actually supports your CPU, and warns you if a port is about to
-  be published more widely than you'd expect.
-- It never silently overwrites a file you've edited by hand — it'll ask first and keep a `.bak`.
-- Running install or start again doesn't duplicate anything; it just converges to the right state.
-- Updating images (option 6) pulls newer layers but keeps your running containers on the old image
-  until you say "go ahead and recreate" — and recreating does wipe in-container progress (like
-  Juice Shop challenge progress), though named volumes are kept.
-- Removing things keeps your data by default. Nothing gets deleted unless you explicitly say yes.
-- URLs shown are the ones you can actually open in your browser. There's also a container-internal
-  view for the curious, but that's not something you can browse to directly.
-- Logs land as JSON lines under `~/.owasp_lab/logs/lab.log`, and state lives in
-  `~/.owasp_lab/state.json`.
-- Images default to the `latest` tag, and the digest that actually got pulled is recorded for you.
-  If you want to pin a specific version, set something like
-  `LAB_IMAGE_JUICE_SHOP=bkimminich/juice-shop:<tag>`, or point the catalog at a specific release.
 
 ## If something goes wrong
 
