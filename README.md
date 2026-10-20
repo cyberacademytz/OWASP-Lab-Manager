@@ -82,25 +82,6 @@ Install Docker Desktop, start it once, then run `python3 owasp_lab_manager.py`. 
 Apple Silicon, keep an eye out — some images are amd64-only and the tool will warn you if it spots
 that.
 
-### A few handy commands
-```bash
-python3 owasp_lab_manager.py                                   # just open the menu
-python3 owasp_lab_manager.py --dry-run --run 5 --app crapi     # see what it *would* do, no changes
-python3 owasp_lab_manager.py --run 5 --app juice-shop --accept-risk --yes   # fully scripted install
-python3 owasp_lab_manager.py --run status_all                   # quick status check
-LAB_HOME=/opt/lab python3 owasp_lab_manager.py                 # use a different data folder
-```
-`--bind` lets you change the address it publishes on (default is `127.0.0.1`), but anything other
-than localhost makes you type `EXPOSE` first — on purpose, because that's genuinely not something
-you want to do by accident. `--yes` will breeze through the normal prompts for you, but it will
-never auto-agree to delete volumes, images, or downloaded files — those always ask.
-
-## Getting around the menu
-
-It's a clean, full-screen interface — clears the screen, shows a banner (`Author: www.tca.ac.tz`),
-and groups everything into 8 sections instead of a huge flat list. `0` always takes you back or
-exits.
-
 | Section | What's in it |
 |---|---|
 | 1. Environment & Docker | System checks, Docker install help, port checks |
@@ -111,23 +92,6 @@ exits.
 | 6. Update Images | Pull newer images (asks before recreating anything) |
 | 7. Remove & Cleanup | Remove one app, or wipe all lab containers and networks |
 | 8. Help & Documentation | Usage notes, safety reminders, project links |
-
-Colours respect `NO_COLOR` if you've got that set, and the screen only clears on a real terminal —
-piping the output somewhere won't get weird escape codes mixed in.
-
-### Scripting it
-
-If you want to drive it from a script instead of clicking through the menu, `--run` takes either a
-number or a name, and these stay stable even if the menu layout changes:
-
-```
-1 check_requirements   2 install_docker      3 list_catalog        4 install_selected
-5 install_one          6 menu_start          7 menu_stop           8 menu_restart
-9 status_all           10 show_urls          11 view_logs          12 container_health
-13 update_images       14 check_ports        15 connectivity_tests 16 list_containers
-17 stop_all            18 remove_app         19 remove_all         20 show_logs
-21 help_text
-```
 
 ## How it behaves, in plain terms
 
@@ -149,13 +113,6 @@ number or a name, and these stay stable even if the menu layout changes:
 - Images default to the `latest` tag, and the digest that actually got pulled is recorded for you.
   If you want to pin a specific version, set something like
   `LAB_IMAGE_JUICE_SHOP=bkimminich/juice-shop:<tag>`, or point the catalog at a specific release.
-
-## Adding your own app
-
-Drop a `catalog.local.json` file into `~/.owasp_lab/` using the same shape as `catalog.json`
-(`"method"` can be `template-compose`, `download-compose`, or `git-compose`). Anything without a
-`"tier"` field just shows up as COMMUNITY. Bad entries get skipped with a warning instead of
-crashing the whole tool.
 
 ## If something goes wrong
 
@@ -179,28 +136,6 @@ crashing the whole tool.
 3. For a totally clean slate, delete `~/.owasp_lab` (or wherever you pointed `LAB_HOME`) and this
    project folder. `docker images` / `docker image rm` will clear out any leftover images if you
    want the disk space back.
-
-## Worth knowing before you dive in
-
-- These apps are vulnerable on purpose, and some ship with default lab credentials out of the box.
-  Don't reuse real passwords anywhere near them.
-- Nothing runs privileged, nothing mounts your host filesystem, and nothing ever gets access to
-  the Docker socket — I checked every compose file for this myself.
-- Docker's own port publishing can bypass your host firewall rules, which is one more reason to
-  just leave everything on localhost.
-- crAPI, Shepherd and Mutillidae track their upstream `main`/`dev` branches, so what gets pulled
-  can change over time. Pin a specific ref if you need things to stay exactly the same.
-- A couple of Mutillidae's ports are under 1024 — Docker handles that binding for you, not this
-  script.
-- The apps with fixed ports (crAPI, Mutillidae) can't be remapped without editing their upstream
-  compose file directly, which this tool deliberately won't do for you.
-
-## Current status
-
-I've run this end-to-end myself and it works — installs cleanly, starts up, shows the right URLs,
-and tears back down without leaving a mess behind. If you hit something odd on your own machine,
-Monitor & Diagnose → Troubleshooting Log is the first place to look, and it'll usually tell you
-exactly what command ran and what it got back.
 
 ---
 
