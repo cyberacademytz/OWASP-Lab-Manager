@@ -1,0 +1,7 @@
+# owasp_lab_manager.py uses ONLY the Python 3.8+ standard library.
+# No pip packages are required to run it.
+#
+# External (non-pip) tools it drives:
+#   docker (Engine or Docker Desktop)
+#   docker compose v2 plugin (or legacy docker-compose, supported with a warning)
+#   git   (only for Security Shepherd and Mutillidae II, which are cloned from upstream)

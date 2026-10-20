@@ -1,0 +1,145 @@
+{
+  "schema_version": 1,
+  "_comment": "Application catalog. Add apps here (or in $LAB_HOME/catalog.local.json) without touching the Python script. Supported methods: template-compose, download-compose, git-compose, alias. Fields marked 'verification' record what was checked against upstream and what was NOT.",
+  "apps": [
+    {
+      "id": "juice-shop",
+      "name": "OWASP Juice Shop",
+      "tier": "official-owasp",
+      "description": "Modern, intentionally insecure web shop (Node.js/Angular) covering the OWASP Top 10 and many more flaws, with a built-in score board.",
+      "docs": "https://owasp.org/www-project-juice-shop/",
+      "repo": "https://github.com/juice-shop/juice-shop",
+      "packaging": "Docker Hub image bkimminich/juice-shop (published by the project lead, referenced by the upstream README)",
+      "method": "template-compose",
+      "compose_template": "compose/juice-shop.yml",
+      "probe_images": ["bkimminich/juice-shop:latest"],
+      "env_defaults": {"LAB_IMAGE_JUICE_SHOP": "bkimminich/juice-shop:latest"},
+      "ports": [
+        {"name": "Web UI", "env": "LAB_PORT_JUICE_SHOP", "default": 3000, "scheme": "http", "path": "/", "primary": true}
+      ],
+      "prerequisites": ["Docker Engine / Docker Desktop", "Docker Compose v2", "Internet access to pull the image"],
+      "min_ram_gb": 1,
+      "startup_timeout": 120,
+      "notes": ["Challenge progress lives inside the container: stop/start keeps it, removing the container loses it.", "Image tag defaults to 'latest'. Override with env var LAB_IMAGE_JUICE_SHOP to pin a tag/digest; the script records the pulled digest in state.json."],
+      "verification": "Image name, port 3000 and 127.0.0.1 binding taken from the upstream README. Not run against a live Docker daemon by the author of this script."
+    },
+    {
+      "id": "webgoat",
+      "name": "OWASP WebGoat (with WebWolf)",
+      "tier": "official-owasp",
+      "description": "Deliberately insecure Java application with guided lessons. Current images bundle WebWolf (attacker helper: file/mail landing page) on a second port.",
+      "docs": "https://owasp.org/www-project-webgoat/",
+      "repo": "https://github.com/WebGoat/WebGoat",
+      "packaging": "Docker Hub image webgoat/webgoat (referenced by the upstream README)",
+      "method": "template-compose",
+      "compose_template": "compose/webgoat.yml",
+      "probe_images": ["webgoat/webgoat:latest"],
+      "env_defaults": {"LAB_IMAGE_WEBGOAT": "webgoat/webgoat:latest", "LAB_TZ": "UTC"},
+      "ports": [
+        {"name": "WebGoat", "env": "LAB_PORT_WEBGOAT_HTTP", "default": 8080, "scheme": "http", "path": "/WebGoat", "primary": true},
+        {"name": "WebWolf", "env": "LAB_PORT_WEBWOLF_HTTP", "default": 9090, "scheme": "http", "path": "/WebWolf"}
+      ],
+      "prerequisites": ["Docker Engine / Docker Desktop", "Docker Compose v2", "Internet access to pull the image"],
+      "min_ram_gb": 1,
+      "startup_timeout": 180,
+      "notes": ["Create your own account on first visit (registration is part of the app).", "If you change the host ports, some WebGoat<->WebWolf links/lessons may assume the defaults 8080/9090; keep defaults if a lesson misbehaves.", "Some lessons mention extra hosts-file entries (www.webgoat.local / www.webwolf.local) - see upstream README. The script never edits your hosts file."],
+      "verification": "Image, ports 8080/9090 and URL paths /WebGoat and /WebWolf taken from the upstream README (checked against raw GitHub README). Not run against a live Docker daemon."
+    },
+    {
+      "id": "webwolf",
+      "name": "OWASP WebWolf",
+      "tier": "official-owasp",
+      "description": "Companion tool for WebGoat. In current WebGoat releases it ships inside the webgoat/webgoat image, so it is deployed together with WebGoat.",
+      "docs": "https://owasp.org/www-project-webgoat/",
+      "repo": "https://github.com/WebGoat/WebGoat",
+      "method": "alias",
+      "alias_of": "webgoat",
+      "notes": ["Selecting WebWolf operates on the WebGoat deployment. Older, separate WebWolf images are not supported by this catalog."]
+    },
+    {
+      "id": "crapi",
+      "name": "OWASP crAPI (Completely Ridiculous API)",
+      "tier": "official-owasp",
+      "description": "Intentionally vulnerable REST API/web app (identity, community, workshop, chatbot services) for API security practice (OWASP API Top 10).",
+      "docs": "https://owasp.org/www-project-crapi/",
+      "repo": "https://github.com/OWASP/crAPI",
+      "packaging": "Official OWASP/crAPI deploy/docker/docker-compose.yml; images crapi/* on Docker Hub; also pulls third-party postgres, mongo, chromadb and mailhog images",
+      "method": "download-compose",
+      "compose_url": "https://raw.githubusercontent.com/OWASP/crAPI/main/deploy/docker/docker-compose.yml",
+      "allowed_download_hosts": ["raw.githubusercontent.com"],
+      "compose_args": ["--compatibility"],
+      "probe_images": ["crapi/crapi-web:latest"],
+      "env_static": {"LISTEN_IP": "{bind}"},
+      "ports": [
+        {"name": "Web UI", "default": 8888, "scheme": "http", "path": "/", "primary": true, "fixed": true},
+        {"name": "Mailhog UI (emails sent by crAPI)", "default": 8025, "scheme": "http", "path": "/", "fixed": true},
+        {"name": "HTTPS (self-signed)", "default": 8443, "scheme": "https", "path": "/", "fixed": true},
+        {"name": "Alt HTTP", "default": 30080, "scheme": "http", "path": "/", "fixed": true, "secondary": true},
+        {"name": "Alt HTTPS", "default": 30443, "scheme": "https", "path": "/", "fixed": true, "secondary": true}
+      ],
+      "prerequisites": ["Docker Engine / Docker Desktop", "Docker Compose v2 (compose file is used with --compatibility as upstream documents)", "Several GB of free RAM (multi-container stack)", "Internet access"],
+      "min_ram_gb": 4,
+      "startup_timeout": 420,
+      "notes": ["The upstream compose file binds published ports to ${LISTEN_IP:-127.0.0.1}; this script sets LISTEN_IP to the configured bind address (default 127.0.0.1).", "Ports are defined by the upstream compose file and are not individually changeable here. 8888 clashes with Mutillidae II's extra port 8888 - run one at a time.", "Compose file is downloaded from the 'main' branch (moving target). Set 'compose_url' to a release tag/commit URL in catalog.json for reproducible deployments."],
+      "verification": "Compose file fetched from upstream and inspected: images crapi/*, ports 8888/8025/8443/30080/30443 and LISTEN_IP default 127.0.0.1 confirmed in the file. No privileged/docker.sock settings found. Not run against a live Docker daemon."
+    },
+    {
+      "id": "shepherd",
+      "name": "OWASP Security Shepherd",
+      "tier": "official-owasp",
+      "description": "Web and mobile security training platform with levels, scoring and classroom features (Tomcat + MariaDB + MongoDB).",
+      "docs": "https://owasp.org/www-project-security-shepherd/",
+      "repo": "https://github.com/OWASP/SecurityShepherd",
+      "packaging": "Upstream repository docker-compose.yml + .env (images owasp/security-shepherd, owasp/security-shepherd_mariadb, owasp/security-shepherd_mongo)",
+      "method": "git-compose",
+      "git_url": "https://github.com/OWASP/SecurityShepherd.git",
+      "git_ref": "dev",
+      "compose_file": "docker-compose.yml",
+      "up_args": ["--no-build"],
+      "probe_images": [],
+      "env_static": {"DB_SERVER_MAPPED_HOST": "{bind}", "MONGO_SERVER_MAPPED_HOST": "{bind}"},
+      "ports": [
+        {"name": "HTTP (Tomcat)", "env": "HTTP_PORT", "env_format": "{bind}:{value}", "default": 8080, "scheme": "http", "path": "/", "primary": true},
+        {"name": "HTTPS (Tomcat, self-signed)", "env": "HTTPS_PORT", "env_format": "{bind}:{value}", "default": 8443, "scheme": "https", "path": "/"},
+        {"name": "MariaDB (internal service)", "env": "DB_PORT_MAPPED_HOST", "default": 13306, "internal_service": true},
+        {"name": "MongoDB (internal service)", "env": "MONGO_PORT_MAPPED_HOST", "default": 27018, "internal_service": true}
+      ],
+      "prerequisites": ["Docker Engine / Docker Desktop", "Docker Compose v2", "git", "Internet access", "Free disk space for 3 images"],
+      "min_ram_gb": 2,
+      "startup_timeout": 300,
+      "notes": ["The upstream compose file publishes ports as $HTTP_PORT:8080 (all interfaces by default). This script overrides HTTP_PORT/HTTPS_PORT with '<bind>:<port>' so they are bound to localhost. DB/Mongo host ports default to 13306/27018 here to avoid clashing with local database servers.", "The upstream .env contains default credentials for the throw-away lab database; they are not real secrets. Read the project docs for first-login/setup steps (core-setup instructions).", "Upstream uses fixed container names (secshep_*): the pre-flight check refuses to start if another container already uses those names.", "Images are pulled from Docker Hub (--no-build). If a pull fails, follow the upstream README to build locally."],
+      "verification": "docker-compose.yml and .env fetched from upstream (dev branch) and inspected. Existence/currency of the Docker Hub images was NOT verified by the author; the script reports pull failures clearly. Not run against a live Docker daemon."
+    },
+    {
+      "id": "mutillidae",
+      "name": "OWASP Mutillidae II",
+      "tier": "official-owasp",
+      "description": "Deliberately vulnerable PHP application with many OWASP Top 10 flaws and hints; Docker packaging runs Apache/PHP, MySQL, OpenLDAP, phpMyAdmin and phpLDAPadmin.",
+      "docs": "https://owasp.org/www-project-mutillidae-ii/",
+      "repo": "https://github.com/webpwnized/mutillidae-docker",
+      "packaging": "Docker packaging maintained in the project lead's own GitHub org (webpwnized), not the OWASP org; images webpwnized/mutillidae:* on Docker Hub",
+      "method": "git-compose",
+      "git_url": "https://github.com/webpwnized/mutillidae-docker.git",
+      "git_ref": "main",
+      "compose_file": ".build/docker-compose.yml",
+      "build_fallback": true,
+      "probe_images": ["webpwnized/mutillidae:www"],
+      "ports": [
+        {"name": "Web (HTTP)", "default": 80, "scheme": "http", "path": "/", "primary": true, "fixed": true},
+        {"name": "Web (HTTP, alt)", "default": 8888, "scheme": "http", "path": "/", "fixed": true, "secondary": true},
+        {"name": "Web (HTTPS)", "default": 443, "scheme": "https", "path": "/", "fixed": true},
+        {"name": "phpMyAdmin", "default": 81, "scheme": "http", "path": "/", "fixed": true},
+        {"name": "phpLDAPadmin", "default": 82, "scheme": "http", "path": "/", "fixed": true},
+        {"name": "LDAP (internal service)", "default": 389, "internal_service": true, "fixed": true}
+      ],
+      "prerequisites": ["Docker Engine / Docker Desktop", "Docker Compose v2", "git", "Free host ports 80/81/82/389/443/8888 (ports < 1024 are published by the Docker daemon, no root needed for the script)"],
+      "min_ram_gb": 2,
+      "startup_timeout": 240,
+      "notes": ["Upstream compose file already binds every published port to 127.0.0.1; ports are fixed by that file.", "On first visit the app shows a 'database not found' warning; use the link on that page to (re)build the database. This is documented upstream.", "Upstream README says the site assumes the domain mutillidae.localhost; http://127.0.0.1/ is the documented URL.", "Upstream uses generic container names (www, database, directory, ...): the pre-flight check refuses to start if another container already uses one of them.", "Compose file lives in the cloned repo (main branch). Set 'git_ref' to a tag/commit for reproducibility."],
+      "verification": "Upstream repo cloned and .build/docker-compose.yml inspected: images webpwnized/mutillidae:*, ports 80/81/82/389/443/8888 on 127.0.0.1, no privileged/docker.sock settings. Not run against a live Docker daemon."
+    }
+  ],
+  "unverified_candidates": [
+    "OWASP NodeGoat, OWASP DVSA, OWASP Damn Vulnerable Web Sockets etc. are NOT included because their current Docker installation requirements were not verified for this catalog. Add them yourself via catalog.local.json after checking upstream."
+  ]
+}
