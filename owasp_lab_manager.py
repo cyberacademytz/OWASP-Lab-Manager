@@ -16,6 +16,9 @@ Design notes
     Docker resource it manages belongs to a Compose project named "owasplab-<app id>".
     Cleanup only ever touches those projects.
   * Application definitions live in catalog.json (+ optional $LAB_HOME/catalog.local.json).
+  * Auto-fix (v1.2): when an install/start finds a missing prerequisite (Docker, Compose plugin, git,
+    stopped Docker service, docker permission, busy default port, flaky image pull) the tool repairs it
+    itself instead of stopping with an error. Disable with --no-auto-fix.
 """
 from __future__ import annotations
 
@@ -42,7 +45,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-VERSION = "1.1.0"
+VERSION = "1.2.0"
 SCRIPT_DIR = Path(__file__).resolve().parent
 CATALOG_PATH = Path(os.environ.get("LAB_CATALOG", SCRIPT_DIR / "catalog.json"))
 LAB_HOME = Path(os.environ.get("LAB_HOME", Path.home() / ".owasp_lab"))
@@ -420,6 +423,7 @@ class Lab:
             self.state.data["bind"] = args.bind
         self.compose: Optional[List[str]] = None
         self.compose_is_v1 = False
+        self.use_sudo = False          # set when docker needs elevated rights (we never touch the docker group)
         self._detect_compose()
 
     # ------------------------------------------------------------- basics ---
@@ -441,6 +445,9 @@ class Lab:
     def run(self, cmd: List[str], *, env: Optional[Dict[str, str]] = None, cwd: Optional[Path] = None,
             timeout: Optional[int] = 120, stream: bool = False, mutating: bool = False) -> Result:
         """Run a command WITHOUT a shell. Mutating commands are skipped in dry-run mode."""
+        if self.use_sudo and cmd and cmd[0] in ("docker", "docker-compose"):
+            cmd = ["sudo", "env"] + [f"{k}={v}" for k, v in (env or {}).items()] + list(cmd)
+            env = None
         shown = shlex.join(cmd)
         if self.dry and mutating:
             print(_c("35", "[dry-run] $ ") + shown)
@@ -559,6 +566,169 @@ class Lab:
             err("Docker Compose not found (need the 'docker compose' plugin). Use 'Environment & Docker > Install and Verify Docker'.")
             return False
         return True
+
+    # ------------------------------------------------ auto-fix prerequisites ---
+    def _is_root(self) -> bool:
+        return hasattr(os, "geteuid") and os.geteuid() == 0
+
+    def _sudo(self) -> Optional[List[str]]:
+        """[] when already root, ['sudo'] when sudo exists, None when neither is possible."""
+        if self._is_root():
+            return []
+        return ["sudo"] if shutil.which("sudo") else None
+
+    def _sys_run(self, cmd: List[str]) -> bool:
+        """Run a system-modifying command, streaming its output. Prints it first; skipped in --dry-run."""
+        info("Running: " + shlex.join(cmd))
+        r = self.run(cmd, stream=True, mutating=True, timeout=None)
+        if r.rc != 0:
+            err(f"Command failed (rc={r.rc}): {shlex.join(cmd)}")
+            return False
+        return True
+
+    def _apt_has(self, pkg: str) -> bool:
+        r = self.run(["apt-cache", "policy", pkg], timeout=30)
+        m = re.search(r"Candidate:\s*(\S+)", r.out)
+        return bool(m and m.group(1) != "(none)")
+
+    def _apt_install(self, want_docker: bool, want_compose: bool, want_git: bool) -> bool:
+        sudo = self._sudo()
+        if sudo is None:
+            err("Root rights are needed to install packages but 'sudo' is not available. Re-run this script as root.")
+            return False
+        env = ["env", "DEBIAN_FRONTEND=noninteractive"]
+        if not self._sys_run(sudo + env + ["apt-get", "update"]):
+            warn("'apt-get update' failed; trying with the existing package lists.")
+        pkgs: List[str] = []
+        if want_docker:
+            if not self.dry and not self._apt_has("docker.io"):
+                err("Package 'docker.io' is not in your apt sources. Add Docker's official repository: "
+                    "https://docs.docker.com/engine/install/")
+                return False
+            pkgs.append("docker.io")
+        if want_compose:
+            for cp in ("docker-compose-v2", "docker-compose-plugin", "docker-compose"):
+                if self.dry or self._apt_has(cp):
+                    pkgs.append(cp)
+                    break
+            else:
+                warn("No Docker Compose package found in apt; installing the rest.")
+        if want_git:
+            pkgs.append("git")
+        if not pkgs:
+            return False
+        return self._sys_run(sudo + env + ["apt-get", "install", "-y", *pkgs])
+
+    def _start_docker_service(self) -> None:
+        osi = self.os_info()
+        if osi["system"] == "Darwin":
+            self.run(["open", "-a", "Docker"], mutating=True)
+            return
+        sudo = self._sudo()
+        if sudo is None:
+            return
+        if shutil.which("systemctl") and Path("/run/systemd/system").exists():
+            self._sys_run(sudo + ["systemctl", "enable", "--now", "docker"])
+        elif shutil.which("service"):
+            self._sys_run(sudo + ["service", "docker", "start"])
+
+    def _wait_for_daemon(self, timeout: int) -> bool:
+        start = time.time()
+        while time.time() - start < timeout:
+            server, _c, e = self.docker_versions()
+            if server:
+                return True
+            if "permission denied" in e.lower() and not self.use_sudo and self._sudo() == ["sudo"]:
+                info("Docker is running but your user may not use it; running docker through sudo in this session "
+                     "(your account is NOT added to the docker group).")
+                self.use_sudo = True
+                self._detect_compose()
+                continue
+            time.sleep(3)
+        return False
+
+    def ensure_docker(self, ask: bool = False) -> bool:
+        """Make Docker + Compose usable, fixing whatever is missing. True when ready (or when --dry-run)."""
+        server, comp, e = self.docker_versions()
+        if server and self.compose:
+            return True
+        osi = self.os_info()
+        warn(f"Docker is not ready ({e or 'Docker Compose missing'}). Fixing it now...")
+        # 1) installed but the user may not talk to the daemon
+        if shutil.which("docker") and "permission denied" in e.lower() and self._sudo() == ["sudo"]:
+            info("Docker needs elevated rights; running docker through sudo in this session "
+                 "(your account is NOT added to the docker group).")
+            self.use_sudo = True
+            self._detect_compose()
+            server, comp, e = self.docker_versions()
+            if server and self.compose:
+                ok(f"Docker {server} ready (via sudo).")
+                return True
+        # 2) install what is missing
+        need_docker = not shutil.which("docker")
+        need_compose = not self.compose
+        if need_docker or need_compose:
+            what = " and ".join(x for x, n in (("Docker", need_docker), ("Docker Compose", need_compose)) if n)
+            if ask and not self.confirm(f"Install {what} now?", default=True):
+                return False
+            if osi["system"] == "Linux" and shutil.which("apt-get"):
+                if not self._apt_install(need_docker, need_compose, False):
+                    return False
+            elif osi["system"] == "Darwin" and shutil.which("brew"):
+                if need_docker and not self._sys_run(["brew", "install", "--cask", "docker"]):
+                    return False
+                if not need_docker and need_compose and not self._sys_run(["brew", "install", "docker-compose"]):
+                    return False
+            else:
+                err("Automatic installation is not supported on this system. Install Docker manually: "
+                    "https://docs.docker.com/engine/install/ (macOS needs Homebrew or Docker Desktop; "
+                    "Windows needs WSL2 + Docker Desktop).")
+                return False
+            self._detect_compose()
+        # 3) the daemon must be running
+        server, comp, e = self.docker_versions()
+        if not server:
+            if ask and not self.confirm("Start the Docker service now?", default=True):
+                return False
+            info("Starting the Docker service...")
+            self._start_docker_service()
+            if self.dry:
+                return True
+            if not self._wait_for_daemon(120 if osi["system"] == "Darwin" else 45):
+                err("Docker was installed but its daemon is not reachable. On macOS open Docker Desktop once and accept "
+                    "its prompts, then re-run. On Linux check: systemctl status docker")
+                return False
+        self._detect_compose()
+        server, comp, e = self.docker_versions()
+        if server and self.compose:
+            ok(f"Docker {server} is ready (Compose {comp or '?'}).")
+            return True
+        err(f"Docker is still not usable ({e or 'Compose plugin missing'}).")
+        return False
+
+    def ensure_git(self) -> bool:
+        if shutil.which("git"):
+            return True
+        warn("git is missing (needed for this application). Installing it...")
+        osi = self.os_info()
+        if osi["system"] == "Linux" and shutil.which("apt-get"):
+            self._apt_install(False, False, True)
+        elif osi["system"] == "Darwin" and shutil.which("brew"):
+            self._sys_run(["brew", "install", "git"])
+        else:
+            err("Install git manually, then re-run.")
+            return False
+        return self.dry or bool(shutil.which("git"))
+
+    def ensure_prerequisites(self, app: App) -> bool:
+        """Auto-fix everything an install/start needs, then confirm Docker is usable."""
+        if getattr(self.args, "no_auto_fix", False):
+            return self.require_docker()
+        if not self.ensure_docker():
+            return False
+        if app.method == "git-compose" and not self.ensure_git():
+            return False
+        return self.require_docker()
 
     # ------------------------------------------------ app/env construction ---
     def app_state(self, app: App) -> Dict[str, Any]:
@@ -799,67 +969,13 @@ class Lab:
     # 2 ------------------------------------------------------------------
     def install_docker(self) -> None:
         header("Install and verify Docker")
-        server, comp, e = self.docker_versions()
-        if server and self.compose:
-            ok(f"Docker daemon {server} and Compose {comp or '?'} are available.")
-        else:
-            warn(f"Docker is not fully available ({e or 'compose missing'}).")
-            osi = self.os_info()
-            print("Official instructions: https://docs.docker.com/engine/install/  |  https://docs.docker.com/desktop/")
-            if osi["system"] == "Linux" and osi["wsl"] != "True" and shutil.which("apt-get"):
-                self._apt_install_docker()
-            elif osi["system"] == "Darwin":
-                print("macOS: install Docker Desktop from https://docs.docker.com/desktop/setup/install/mac-install/ "
-                      "(or: brew install --cask docker), start it once, then re-run this check.")
-            elif osi["wsl"] == "True" or osi["system"] == "Windows":
-                print("Windows: install Docker Desktop with the WSL2 backend and enable WSL integration for your distro "
-                      "(https://docs.docker.com/desktop/features/wsl/), then run this script inside WSL.")
-            else:
-                print("Follow the official instructions for your distribution; this script will not guess package names.")
-            server, comp, e = self.docker_versions()
-        if server and self.compose:
-            if self.confirm("Run 'docker run --rm hello-world' to verify end-to-end (pulls a tiny image)?"):
+        if self.ensure_docker(ask=True):
+            if not self.dry and self.confirm("Run 'docker run --rm hello-world' to verify end-to-end (pulls a tiny image)?"):
                 r = self.docker("run", "--rm", "hello-world", stream=True, mutating=True)
                 (ok if r.rc == 0 else err)("hello-world " + ("succeeded." if r.rc == 0 else "failed."))
         else:
-            warn("Docker still not ready. Nothing else was changed.")
-
-    def _apt_install_docker(self) -> None:
-        def candidate(pkg: str) -> bool:
-            r = self.run(["apt-cache", "policy", pkg], timeout=30)
-            m = re.search(r"Candidate:\s*(\S+)", r.out)
-            return bool(m and m.group(1) != "(none)")
-
-        pkgs = []
-        if not shutil.which("docker"):
-            pkgs.append("docker.io" if candidate("docker.io") else "")
-        if not self.compose:
-            for cp in ("docker-compose-v2", "docker-compose-plugin", "docker-compose"):
-                if candidate(cp):
-                    pkgs.append(cp)
-                    break
-        pkgs = [p for p in pkgs if p]
-        if not pkgs:
-            warn("No suitable apt packages found in your configured repositories. Use the official Docker repository.")
-            return
-        sudo = [] if (hasattr(os, "geteuid") and os.geteuid() == 0) else ["sudo"]
-        cmds = [sudo + ["apt-get", "update"], sudo + ["apt-get", "install", "-y", *pkgs]]
-        print("Proposed commands (they modify system packages):")
-        for c in cmds:
-            print("   " + shlex.join(c))
-        if not self.confirm("Run these commands now?"):
-            info("Skipped. You can run them yourself.")
-            return
-        for c in cmds:
-            r = self.run(c, stream=True, mutating=True, timeout=None)
-            if r.rc != 0:
-                err(f"Command failed (rc={r.rc}). Install Docker manually using the official docs.")
-                return
-        if self.confirm("Enable and start the Docker service (systemctl enable --now docker)?"):
-            self.run(sudo + ["systemctl", "enable", "--now", "docker"], stream=True, mutating=True)
-        info("Group membership is NOT changed automatically. To use docker without sudo you may add your user to the "
-             "'docker' group yourself (that grants root-equivalent access), or run this script with sudo.")
-        self._detect_compose()
+            warn("Docker still not ready. Official instructions: https://docs.docker.com/engine/install/  |  "
+                 "https://docs.docker.com/desktop/")
 
     # 3 ------------------------------------------------------------------
     def list_catalog(self) -> None:
@@ -924,13 +1040,9 @@ class Lab:
             else:
                 ok(f"{image} provides {osi['arch']}.")
         # port + name conflicts (ignore what our own running containers already hold)
-        own = {(p["host_port"]) for p in self.published_ports(app)}
-        conflicts = []
-        for p in self.planned_ports(app):
-            if p["port"] in own:
-                continue
-            if port_in_use(p["host_ip"], p["port"]):
-                conflicts.append(p)
+        conflicts = self._port_conflicts(app)
+        if conflicts and not getattr(self.args, "no_auto_fix", False) and self._auto_move_ports(app, conflicts):
+            conflicts = self._port_conflicts(app)
         if conflicts:
             good = False
             for p in conflicts:
@@ -952,6 +1064,32 @@ class Lab:
             if p["host_ip"] in ("0.0.0.0", "::", "") and self.bind in LOOPBACK:
                 warn(f"Port {p['port']} would be published on ALL interfaces by the compose file.")
         return good
+
+    def _port_conflicts(self, app: App) -> List[Dict[str, Any]]:
+        own = {p["host_port"] for p in self.published_ports(app)}
+        return [p for p in self.planned_ports(app)
+                if p["port"] not in own and port_in_use(p["host_ip"], p["port"])]
+
+    def _auto_move_ports(self, app: App, conflicts: List[Dict[str, Any]]) -> bool:
+        """Move busy, movable host ports to the next free one. Fixed upstream ports are left for the user."""
+        moved = False
+        taken = {p["port"] for p in self.planned_ports(app)}
+        for c in conflicts:
+            cat = next((x for x in app.get("ports", [])
+                        if x.get("env") and not x.get("fixed") and self.port_value(app, x) == c["port"]), None)
+            if not cat:
+                continue
+            new = next((n for n in range(c["port"] + 1, c["port"] + 200)
+                        if n not in taken and not port_in_use(c["host_ip"], n)), None)
+            if new is None:
+                continue
+            self.app_state(app).setdefault("ports", {})[cat["env"]] = new
+            taken.add(new)
+            moved = True
+            warn(f"Port {c['port']} is busy; '{cat['name']}' will use host port {new} instead.")
+        if moved and not self.dry:
+            self.state.save()
+        return moved
 
     def image_archs(self, image: str) -> Optional[set]:
         r = self.run(["docker", "manifest", "inspect", image], timeout=40)
@@ -1090,7 +1228,7 @@ class Lab:
             self.print_urls(app)
             return True
         self.show_plan(app)
-        if not self.require_docker():
+        if not self.ensure_prerequisites(app):
             return False
         if not self.confirm("Proceed with this deployment?", default=True):
             info("Cancelled.")
@@ -1115,6 +1253,13 @@ class Lab:
     def pull_images(self, app: App) -> bool:
         info("Pulling images (this can take a while)...")
         r = self.compose_run(app, "pull", stream=True, mutating=True, timeout=None)
+        attempt = 1
+        while r.rc != 0 and not self.dry and attempt < 3 and not getattr(self.args, "no_auto_fix", False):
+            wait = 5 * attempt
+            warn(f"Image pull failed (attempt {attempt}/3). Retrying in {wait}s (network or registry hiccup?)...")
+            time.sleep(wait)
+            attempt += 1
+            r = self.compose_run(app, "pull", stream=True, mutating=True, timeout=None)
         if r.rc == 0:
             if not self.dry:
                 self.record_digests(app)
@@ -1143,7 +1288,9 @@ class Lab:
 
     def start_app(self, app: App, skip_checks: bool = False) -> bool:
         app = self.resolve(app)
-        if not self.ensure_acknowledged() or not self.require_docker():
+        if not self.ensure_acknowledged():
+            return False
+        if not (self.require_docker() if skip_checks else self.ensure_prerequisites(app)):
             return False
         if not self.app_state(app).get("installed") and not app.compose_file.exists():
             if self.confirm(f"{app.name} is not installed. Install it now?", default=True):
@@ -1822,6 +1969,8 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     ap.add_argument("--dry-run", action="store_true", help="show what would change; do not modify anything")
     ap.add_argument("--yes", "-y", action="store_true", help="auto-confirm prompts (never auto-deletes data/images/files)")
     ap.add_argument("--accept-risk", action="store_true", help="acknowledge the vulnerable-apps notice non-interactively")
+    ap.add_argument("--no-auto-fix", action="store_true",
+                    help="do not repair missing prerequisites automatically (report errors instead)")
     ap.add_argument("--bind", help="host address for published ports (default 127.0.0.1; persisted)")
     ap.add_argument("--run", metavar="ACTION", help=f"run one action non-interactively and exit: a number 1-{len(ACTIONS)} "
                     "or a name (" + ", ".join(ACTIONS) + ")")
